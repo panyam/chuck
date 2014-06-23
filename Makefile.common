@@ -1,0 +1,64 @@
+
+PROJECT_FOLDER          := `pwd`
+
+# 
+# Version/Product information
+#
+MAJOR_VERSION           = 0
+MINOR_VERSION           = 0
+BUILD_VERSION           = 1
+PRODUCT_NAME            = chuck
+
+# 
+# Build directory
+#
+ifeq ($(OUTPUT_DIR),)
+    OUTPUT_DIR          = $(PROJECT_FOLDER)/bld
+endif
+
+# 
+# Default build mode
+#
+ifeq ($(BUILD_MODE),)
+    BUILD_MODE          = debug
+endif
+
+###############  DO NOT MODIFY BELOW THIS   ##############
+
+VERSION                 = $(MAJOR_VERSION).$(MINOR_VERSION).$(BUILD_VERSION)
+
+OUTPUT_DIR              := $(OUTPUT_DIR)/$(BUILD_MODE)
+
+DEBUG_CFLAGS            =   -g -fno-inline
+PROFILE_CFLAGS          =   -g -fno-inline -pg
+RELEASE_CFLAGS          =   -O3
+INCLUDE_FLAGS           =   $(foreach dir,$(INCLUDE_FOLDERS), -I$(dir)) 
+LIBRARY_FLAGS           =   $(foreach dir,$(LIBRARY_FOLDERS), -L$(dir)) 
+CORE_CFLAGS             =   -Wall $(INCLUDE_FLAGS) $(LIBRARY_FLAGS)
+
+ifeq ($(BUILD_MODE), debug)
+    CFLAGS              =   $(CORE_CFLAGS) $(DEBUG_CFLAGS)              \
+                            -DCHUCK_VERSION_MAJOR=$(MAJOR_VERSION)      \
+                            -DCHUCK_VERSION_MINOR=$(MINOR_VERSION)      \
+                            -DCHUCK_VERSION_REVISION=$(BUILD_VERSION)
+else
+    CFLAGS              =   $(CORE_CFLAGS) $(RELEASE_CFLAGS)            \
+                            -DCHUCK_VERSION_MAJOR=$(MAJOR_VERSION)      \
+                            -DCHUCK_VERSION_MINOR=$(MINOR_VERSION)      \
+                            -DCHUCK_VERSION_REVISION=$(BUILD_VERSION)
+endif
+
+ifeq ($(ENABLE_MEMCHECK), yes)
+     CFLAGS += -DUSING_VALGRIND
+endif
+
+####    Installation Directories    ####
+LIB_INSTALL_DIR         = /usr/local/lib
+INCLUDE_INSTALL_DIR     = /usr/local/include
+
+# 
+# Select compiler
+#
+GCC                     = gcc
+GPP                     = g++
+

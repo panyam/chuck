@@ -1,0 +1,321 @@
+
+#include "chuck.h"
+
+#define    BSIZE    8192
+#define YYCTYPE char
+#define YYCURSOR cursor
+#define YYLIMIT scanner->lim
+#define YYMARKER scanner->ptr
+#define YYFILL(n) {cursor = fill(scanner, cursor); }
+
+int prepare_token_value(int tokValue, ChuckScanner *scanner)
+{
+    char bak = *scanner->cur;
+    scanner->cur[0] = 0;
+    if (tokValue == TOKEN_DOUBLE)
+    {
+        scanner->currToken.value.doubleValue = atof((const char *)scanner->tok);
+    }
+    else if (tokValue == TOKEN_LONG)
+    {
+        scanner->currToken.value.longValue = atol((const char *)scanner->tok);
+    }
+    else if (tokValue == TOKEN_IDENTIFIER)
+    {
+        scanner->currToken.value.stringValue = cu_string((const char *)scanner->tok);
+    }
+    else if (tokValue == TOKEN_STRING)
+    {
+        int len = (scanner->cur - 1) - (scanner->tok + 1);
+        if (len < 0) len = 0;
+        scanner->currToken.value.stringValue = cu_string_from_buffer((const char *)scanner->tok + 1, len);
+    }
+    scanner->cur[0] = bak;
+    scanner->currToken.tokenType = tokValue;
+    return tokValue;
+}
+
+#define RET(tokvalue) { scanner->cur = cursor; return prepare_token_value(tokvalue, scanner); }
+
+ChuckScanner *chuck_scanner_create(CUIStream *instream)
+{
+    ChuckScanner *scanner = ZNEW(ChuckScanner);
+    cu_setattr(scanner, instream, instream);
+    return scanner;
+}
+
+void chuck_scanner_destroy(ChuckScanner *scanner)
+{
+    if (scanner->instream)
+    {
+        cu_stream_close(scanner->instream);
+        cu_setattr(scanner, instream, NULL);
+    }
+    free(scanner);
+}
+
+uchar *fill(ChuckScanner *scanner, uchar *cursor){
+    if(!scanner->eof) {
+        uint cnt = scanner->tok - scanner->bot;
+        if(cnt){
+            memcpy(scanner->bot, scanner->tok, scanner->lim - scanner->tok);
+            scanner->tok = scanner->bot;
+            scanner->ptr -= cnt;
+            cursor -= cnt;
+            scanner->pos -= cnt;
+            scanner->lim -= cnt;
+        }
+        if((scanner->top - scanner->lim) < BSIZE){
+            uchar *buf = (uchar*) malloc(((scanner->lim - scanner->bot) + BSIZE)*sizeof(uchar));
+            memcpy(buf, scanner->tok, scanner->lim - scanner->tok);
+            scanner->tok = buf;
+            scanner->ptr = &buf[scanner->ptr - scanner->bot];
+            cursor = &buf[cursor - scanner->bot];
+            scanner->pos = &buf[scanner->pos - scanner->bot];
+            scanner->lim = &buf[scanner->lim - scanner->bot];
+            scanner->top = &scanner->lim[BSIZE];
+            free(scanner->bot);
+            scanner->bot = buf;
+        }
+        if ((cnt = cu_istream_read(scanner->instream, (char*) scanner->lim, BSIZE)) != BSIZE){
+            scanner->eof = &scanner->lim[cnt]; *(scanner->eof)++ = '\n';
+        }
+        scanner->lim += cnt;
+    }
+    return cursor;
+}
+
+int chuck_scanner_scan(ChuckScanner *scanner)
+{
+    uchar *cursor = scanner->cur;
+std:
+    scanner->tok = cursor;
+/*!re2c
+any    = [\000-\377];
+O    = [0-7];
+D    = [0-9];
+L    = [a-zA-Z_];
+H    = [a-fA-F0-9];
+E    = [Ee] [+-]? D+;
+FS    = [fFlL];
+IS    = [uUlL]*;
+ESC    = [\\] ([abfnrtv?'"\\] | "x" H+ | O+);
+*/
+
+/*!re2c
+    ("0" [xX] H+ IS?) | ("0" D+ IS?) | (D+ IS?) | (['] (ESC|any\[\r\n\\'])* [']) { RET(TOKEN_LONG); }
+    (D+ E FS?) | (D* "." D+ E? FS?) | (D+ "." D* E? FS?) { RET(TOKEN_DOUBLE); }
+    (["] (ESC|any\[\r\n\\"])* ["]) { RET(TOKEN_STRING); }
+    (['] (ESC|any\[\r\n\\'])* [']) { RET(TOKEN_STRING); }
+
+    "/*"            { goto block_comment; }
+    "//"            { goto line_comment; }
+
+    "public"        { RET(TOKEN_PUBLIC); }
+    "static"        { RET(TOKEN_STATIC); }
+    "const"         { RET(TOKEN_CONST); }
+    "break"         { RET(TOKEN_BREAK); }
+    "for"           { RET(TOKEN_FOR); }
+    "repeat"        { RET(TOKEN_REPEAT); }
+    "while"         { RET(TOKEN_WHILE); }
+    "until"         { RET(TOKEN_UNTIL); }
+    "do"            { RET(TOKEN_DO); }
+    "continue"      { RET(TOKEN_CONTINUE); }
+    "if"            { RET(TOKEN_IF); }
+    "else"          { RET(TOKEN_ELSE); }
+    "return"        { RET(TOKEN_RETURN); }
+    "fun"           { RET(TOKEN_FUN); }
+    "new"           { RET(TOKEN_NEW); }
+    "class"         { RET(TOKEN_CLASS); }
+    "extends"       { RET(TOKEN_EXTENDS); }
+    "spork"         { RET(TOKEN_SPORK); }
+    L (L|D)*        { RET(TOKEN_IDENTIFIER); }
+
+    "++"            { RET(TOKEN_PLUSPLUS); }
+    "--"            { RET(TOKEN_MINUSMINUS); }
+    "#"             { RET(TOKEN_HASH); }
+
+    ","             { RET(TOKEN_COMMA); }
+    "."             { RET(TOKEN_DOT); }
+    "+"             { RET(TOKEN_PLUS); }
+    "-"             { RET(TOKEN_MINUS); }
+    "*"             { RET(TOKEN_TIMES); }
+    "/"             { RET(TOKEN_DIVIDE); }
+    "%"             { RET(TOKEN_PERCENT); }
+    "$"             { RET(TOKEN_DOLLAR); }
+
+    ";"             { RET(TOKEN_SEMICOLON); }
+    "::"            { RET(TOKEN_COLONCOLON); }
+    "=="            { RET(TOKEN_CMP_EQ); }
+    "!="            { RET(TOKEN_CMP_NE); }
+    "<"             { RET(TOKEN_CMP_LT); }
+    ">"             { RET(TOKEN_CMP_GT); }
+    "<="            { RET(TOKEN_CMP_LE); }
+    ">="            { RET(TOKEN_CMP_GE); }
+    "&&"            { RET(TOKEN_LOG_AND); }
+    "||"            { RET(TOKEN_LOG_OR); }
+    "&"             { RET(TOKEN_BIT_AND); }
+    "|"             { RET(TOKEN_BIT_OR); }
+    "^"             { RET(TOKEN_BIT_XOR); }
+    "<<<"           { RET(TOKEN_LTLTLT); }
+    ">>>"           { RET(TOKEN_GTGTGT); }
+    ">>"            { RET(TOKEN_RSHIFT); }
+    "<<"            { RET(TOKEN_LSHIFT); }
+    "("             { RET(TOKEN_LPAREN); }
+    ")"             { RET(TOKEN_RPAREN); }
+    "["             { RET(TOKEN_LSQUARE); }
+    "]"             { RET(TOKEN_RSQUARE); }
+    "{"             { RET(TOKEN_LBRACE); }
+    "}"             { RET(TOKEN_RBRACE); }
+    "!"             { RET(TOKEN_NOT); }
+    "~"             { RET(TOKEN_TILDE); }
+
+    "=>"            { RET(TOKEN_CHUCK); }
+    "=<"            { RET(TOKEN_UN_CHUCK); }
+    "!=>"           { RET(TOKEN_NOT_CHUCK); }
+    "=^"            { RET(TOKEN_UP_CHUCK); }
+    "@=>"           { RET(TOKEN_AT_CHUCK); }
+    "+=>"           { RET(TOKEN_PLUS_CHUCK); }
+    "-=>"           { RET(TOKEN_MINUS_CHUCK); }
+    "*=>"           { RET(TOKEN_TIMES_CHUCK); }
+    "/=>"           { RET(TOKEN_DIV_CHUCK); }
+    "&=>"           { RET(TOKEN_BIT_AND_CHUCK); }
+    "|=>"           { RET(TOKEN_BIT_OR_CHUCK); }
+    "^=>"           { RET(TOKEN_BIT_XOR_CHUCK); }
+    ">>=>"          { RET(TOKEN_RSHIFT_CHUCK); }
+    "<<=>"          { RET(TOKEN_LSHIFT_CHUCK); }
+    "%=>"           { RET(TOKEN_MOD_CHUCK); }
+    "@"             { RET(TOKEN_AT); }
+
+    [ \r\t\v\f]+        { goto std; }
+    "\n"            {
+        if (cursor >= scanner->eof) { RET(TOKEN_EOI); }
+        scanner->pos = cursor; scanner->line++;
+        goto std;
+    }
+    any             {
+        if (cursor >= scanner->eof) { RET(TOKEN_EOI); }
+        else { RET(TOKEN_ERROR); }
+    }
+*/
+
+line_comment:
+/*!re2c
+    "\n"
+        {
+            if(cursor >= scanner->eof) { RET(TOKEN_EOI); }
+            scanner->tok = scanner->pos = cursor; scanner->line++;
+            goto std;
+        }
+    any            { goto line_comment; }
+*/
+
+block_comment:
+/*!re2c
+    "*/"            { goto std; }
+    "\n"
+        {
+        if(cursor >= scanner->eof) { RET(TOKEN_EOI); }
+        scanner->tok = scanner->pos = cursor; scanner->line++;
+        goto block_comment;
+        }
+    any            { goto block_comment; }
+*/
+}
+
+const char *chuck_scanner_token_string(int token)
+{
+    static BOOL initialised = false;
+    static const char *TOKEN_STRINGS[MAX_TOKENS];
+    if (!initialised)
+    {
+        initialised = true;
+        TOKEN_STRINGS[TOKEN_EOI] = "EOI";
+        TOKEN_STRINGS[TOKEN_ERROR] = "ERROR";
+        TOKEN_STRINGS[TOKEN_LOG_AND] = "LOGAND";
+        TOKEN_STRINGS[TOKEN_LOG_OR] = "LOGOR";
+        TOKEN_STRINGS[TOKEN_LOG_XOR] = "LOGXOR";
+        TOKEN_STRINGS[TOKEN_UP_CHUCK] = "UP_CHUCK";
+        TOKEN_STRINGS[TOKEN_LSHIFT_CHUCK] = "LSHIFT_CHUCK";
+        TOKEN_STRINGS[TOKEN_RSHIFT_CHUCK] = "RSHIFT_CHUCK";
+        TOKEN_STRINGS[TOKEN_UN_CHUCK] = "UN_CHUCK";
+        TOKEN_STRINGS[TOKEN_MINUS_CHUCK] = "MINUS_CHUCK";
+        TOKEN_STRINGS[TOKEN_PLUS_CHUCK] = "PLUS_CHUCK";
+        TOKEN_STRINGS[TOKEN_DIV_CHUCK] = "DIV_CHUCK";
+        TOKEN_STRINGS[TOKEN_MOD_CHUCK] = "MOD_CHUCK";
+        TOKEN_STRINGS[TOKEN_TIMES_CHUCK] = "TIMES_CHUCK";
+        TOKEN_STRINGS[TOKEN_LSHIFT_CHUCK] = "LSHIFT_CHUCK";
+        TOKEN_STRINGS[TOKEN_RSHIFT_CHUCK] = "RSHIFT_CHUCK";
+        TOKEN_STRINGS[TOKEN_BIT_AND_CHUCK] = "BIT_AND_CHUCK";
+        TOKEN_STRINGS[TOKEN_BIT_OR_CHUCK] = "BIT_OR_CHUCK";
+        TOKEN_STRINGS[TOKEN_BIT_XOR_CHUCK] = "BIT_XOR_CHUCK";
+        TOKEN_STRINGS[TOKEN_BIT_NOT_CHUCK] = "BIT_NOT_CHUCK";
+        TOKEN_STRINGS[TOKEN_AT_CHUCK] = "AT_CHUCK";
+        TOKEN_STRINGS[TOKEN_PLUS] = "PLUS";
+        TOKEN_STRINGS[TOKEN_MINUS] = "MINUS";
+        TOKEN_STRINGS[TOKEN_TIMES] = "TIMES";
+        TOKEN_STRINGS[TOKEN_DIVIDE] = "DIVIDE";
+        TOKEN_STRINGS[TOKEN_PERCENT] = "PERCENT";
+        TOKEN_STRINGS[TOKEN_BIT_AND] = "BIT_AND";
+        TOKEN_STRINGS[TOKEN_BIT_OR] = "BIT_OR";
+        TOKEN_STRINGS[TOKEN_BIT_XOR] = "BIT_XOR";
+        TOKEN_STRINGS[TOKEN_LSHIFT] = "LSHIFT";
+        TOKEN_STRINGS[TOKEN_RSHIFT] = "RSHIFT";
+        TOKEN_STRINGS[TOKEN_LSQUARE] = "LSQUARE";
+        TOKEN_STRINGS[TOKEN_COLONCOLON] = "COLONCOLON";
+        TOKEN_STRINGS[TOKEN_LBRACE] = "LBRACE";
+        TOKEN_STRINGS[TOKEN_RBRACE] = "RBRACE";
+        TOKEN_STRINGS[TOKEN_BREAK] = "BREAK";
+        TOKEN_STRINGS[TOKEN_SEMICOLON] = "SEMICOLON";
+        TOKEN_STRINGS[TOKEN_CONTINUE] = "CONTINUE";
+        TOKEN_STRINGS[TOKEN_LTLTLT] = "LTLTLT";
+        TOKEN_STRINGS[TOKEN_GTGTGT] = "GTGTGT";
+        TOKEN_STRINGS[TOKEN_RETURN] = "RETURN";
+        TOKEN_STRINGS[TOKEN_FOR] = "FOR";
+        TOKEN_STRINGS[TOKEN_LPAREN] = "LPAREN";
+        TOKEN_STRINGS[TOKEN_RPAREN] = "RPAREN";
+        TOKEN_STRINGS[TOKEN_IF] = "IF";
+        TOKEN_STRINGS[TOKEN_ELSE] = "ELSE";
+        TOKEN_STRINGS[TOKEN_CONST] = "CONST";
+        TOKEN_STRINGS[TOKEN_PUBLIC] = "PUBLIC";
+        TOKEN_STRINGS[TOKEN_STATIC] = "STATIC";
+        TOKEN_STRINGS[TOKEN_REPEAT] = "REPEAT";
+        TOKEN_STRINGS[TOKEN_WHILE] = "WHILE";
+        TOKEN_STRINGS[TOKEN_UNTIL] = "UNTIL";
+        TOKEN_STRINGS[TOKEN_DO] = "DO";
+        TOKEN_STRINGS[TOKEN_SPORK] = "SPORK";
+        TOKEN_STRINGS[TOKEN_TILDE] = "TILDE";
+        TOKEN_STRINGS[TOKEN_IDENTIFIER] = "IDENTIFIER";
+        TOKEN_STRINGS[TOKEN_AT] = "AT";
+        TOKEN_STRINGS[TOKEN_STATIC] = "STATIC";
+        TOKEN_STRINGS[TOKEN_DOLLAR] = "DOLLAR";
+        TOKEN_STRINGS[TOKEN_RSQUARE] = "RSQUARE";
+        TOKEN_STRINGS[TOKEN_CHUCK] = "CHUCK";
+        TOKEN_STRINGS[TOKEN_NOT_CHUCK] = "NOT_CHUCK";
+        TOKEN_STRINGS[TOKEN_POWER] = "POWER";
+        TOKEN_STRINGS[TOKEN_CMP_LE] = "CMP_LE";
+        TOKEN_STRINGS[TOKEN_CMP_LT] = "CMP_LT";
+        TOKEN_STRINGS[TOKEN_CMP_EQ] = "CMP_EQ";
+        TOKEN_STRINGS[TOKEN_CMP_NE] = "CMP_NE";
+        TOKEN_STRINGS[TOKEN_CMP_GT] = "CMP_GT";
+        TOKEN_STRINGS[TOKEN_CMP_GE] = "CMP_GE";
+        TOKEN_STRINGS[TOKEN_LOG_AND] = "LOG_AND";
+        TOKEN_STRINGS[TOKEN_LOG_OR] = "LOG_OR";
+        TOKEN_STRINGS[TOKEN_LOG_XOR] = "LOG_XOR";
+        TOKEN_STRINGS[TOKEN_PLUSPLUS] = "PLUSPLUS";
+        TOKEN_STRINGS[TOKEN_MINUSMINUS] = "MINUSMINUS";
+        TOKEN_STRINGS[TOKEN_BIT_NOT] = "BIT_NOT";
+        TOKEN_STRINGS[TOKEN_NOT] = "NOT";
+        TOKEN_STRINGS[TOKEN_DOT] = "DOT";
+        TOKEN_STRINGS[TOKEN_NEW] = "NEW";
+        TOKEN_STRINGS[TOKEN_LONG] = "LONG";
+        TOKEN_STRINGS[TOKEN_DOUBLE] = "DOUBLE";
+        TOKEN_STRINGS[TOKEN_STRING] = "STRING";
+        TOKEN_STRINGS[TOKEN_HASH] = "HASH";
+        TOKEN_STRINGS[TOKEN_COMMA] = "COMMA";
+        TOKEN_STRINGS[TOKEN_CLASS] = "CLASS";
+        TOKEN_STRINGS[TOKEN_EXTENDS] = "EXTENDS";
+        TOKEN_STRINGS[TOKEN_FUN] = "FUN";
+    }
+    return TOKEN_STRINGS[token];
+}

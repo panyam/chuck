@@ -1,0 +1,334 @@
+
+%nonassoc EQ NE GT LT GE LE .
+
+%left EOI .
+%left ERROR .
+
+%include {
+#include "chuck.h"
+
+typedef struct ChuckParserContext
+{
+    ChuckScanner *scanner;
+    LUASTNode *root;
+} ChuckParserContext;
+
+}
+
+%stack_size 0
+%extra_argument {ChuckParserContext *context}
+%token_type {ChuckToken}
+%token_prefix TOKEN_
+%default_type {LUASTNode *}
+%type array_empty_size_decls {int}
+%type array_size_decls {CUList *}
+%type fun_param_list {CUList *}
+%type param_list {CUList *}
+%type while_or_until {BOOL}
+%type chuck_op {int}
+%type arithmetic_op {int}
+%type bitwise_op {int}
+%type comparison_op {int}
+%type logical_op {int}
+%type var_decl {LUASTNode *}
+%type var_decl_header {LUASTNode *}
+%type cast_type_declaration {LUType *}
+%type type_declaration {LUType *}
+%type function_statement {ChuckASTFuncDefnNode *}
+%type fun_type_declaration {ChuckASTFuncDefnNode *}
+
+%syntax_error {
+    printf("Syntax Error at line: %d\n", yypParser->context->scanner->line);
+    int n = sizeof(yyTokenName) / sizeof(yyTokenName[0]);
+    for (int i = 0; i < n; ++i) {
+        int a = yy_find_shift_action(yypParser, (YYCODETYPE)i);
+        if (a < YYNSTATE + YYNRULE) {
+            printf("possible token: %s\n", yyTokenName[i]);
+        }
+    }
+}
+
+module ::= statement_list(input) . { context->root = input; printf("Finished parsing...\n"); }
+
+statement_list(output) ::= statement_list(head) statement (next) . { 
+    output = lu_ast_add_statement(head, next);
+}
+statement_list(output) ::= statement (head) . {
+    output = lu_ast_create_statements_node(head);
+}
+
+statement ::= LTLTLT param_list GTGTGT SEMICOLON .
+statement(output) ::= RETURN logical_expr(input) SEMICOLON . { output = lu_ast_create_return_node(input); }
+statement(output) ::= RETURN SEMICOLON . { output = lu_ast_create_return_node(NULL); }
+statement(output) ::= BREAK SEMICOLON . {output = lu_ast_create_basic_node(LUAST_BREAK_NODE);}
+statement(output) ::= CONTINUE SEMICOLON . {output = lu_ast_create_basic_node(LUAST_CONTINUE_NODE);}
+statement(output) ::= SEMICOLON . { output = lu_ast_create_basic_node(LUAST_EMPTY_NODE); }
+statement ::= block_statement .
+statement ::= iteration_statement .
+statement ::= if_statement .
+statement ::= class_statement .
+statement(output) ::= chuck_expr(input) SEMICOLON . { output = input ; printf("Here ....\n"); }
+
+
+block_statement(output) ::= LBRACE RBRACE . { output = lu_ast_create_basic_node(LUAST_EMPTY_NODE); } 
+block_statement(output) ::= LBRACE statement_list (body) RBRACE . { output = body; }
+
+
+iteration_statement ::= for_statement .
+iteration_statement ::= while_statement .
+iteration_statement ::= do_statement .
+
+while_statement(output) ::= while_or_until(is_while) LPAREN logical_expr(condition) RPAREN statement (body) . {
+    output = lu_ast_create_while_node(false, is_while, condition, body);
+}
+while_or_until (output) ::= WHILE . { output = true; printf ("Got While...\n"); }
+while_or_until (output) ::= UNTIL . { output = false; printf ("Got Until ...\n"); }
+
+
+for_statement(output) ::= FOR LPAREN for_initialiser(initialiser) SEMICOLON 
+                                     for_condition(condition) SEMICOLON 
+                                     for_post_condition(post_condition) RPAREN statement(body) . {
+    output = lu_ast_create_for_node(initialiser, condition, post_condition, body);
+}
+for_initialiser (output) ::= . { output = lu_ast_create_basic_node(LUAST_EMPTY_NODE); }
+for_initialiser ::= chuck_expr .
+for_condition(output) ::= . { output = lu_ast_create_basic_node(LUAST_EMPTY_NODE); }
+for_condition ::= chuck_expr .
+for_post_condition(output) ::= . { output = lu_ast_create_basic_node(LUAST_EMPTY_NODE); }
+for_post_condition ::= chuck_expr .
+
+if_statement ::= matched_if_statement .
+if_statement ::= unmatched_if_statement .
+
+matched_if_statement ::= IF LPAREN logical_expr RPAREN matched_if_statement ELSE matched_if_statement .
+unmatched_if_statement ::= IF LPAREN logical_expr RPAREN statement .
+unmatched_if_statement ::= IF LPAREN logical_expr RPAREN matched_if_statement ELSE unmatched_if_statement .
+
+
+do_statement(output) ::= DO statement(body) while_or_until(is_while) LPAREN logical_expr(condition) RPAREN SEMICOLON . {
+    output = lu_ast_create_while_node(true, is_while, condition, body);
+}
+
+chuck_expr(output) ::= logical_expr(left) UN_CHUCK logical_expr(right) . {
+    output = lu_ast_create_binary_node(CHUCK_OP_UN_CHUCK, left, right);
+}
+chuck_expr(output) ::= chuck_expr(left) chuck_op(opcode) logical_expr(right) . {
+    output = lu_ast_create_binary_node(opcode, left, right);
+}
+chuck_expr(output) ::= SPORK TILDE logical_expr(input) . { output = chuck_ast_create_spork_node(input); }
+chuck_expr ::= logical_expr .
+
+var_decl ::= var_decl_header . 
+var_decl(output) ::= var_decl_header(var_decl) array_size_decls(array_sizes) . {
+    ChuckASTVarDeclNode *var_node = (ChuckASTVarDeclNode *)var_decl;
+    LUType *var_type = lu_type_array(var_node->var_type, cu_collection_size(array_sizes));
+    cu_setattr(var_node, var_type, var_type);
+    output = (LUASTNode *)var_node;
+}
+var_decl_header(output) ::= IDENTIFIER(var_type) IDENTIFIER(var_name) . { 
+    output = lu_ast_create_variable_decl_node(lu_type_get(NULL, var_type.value.stringValue),
+                                              var_name.value.stringValue,
+                                              NULL);
+}
+var_decl_header(output) ::= IDENTIFIER(var_type) AT IDENTIFIER(var_name) . {
+    output = lu_ast_create_variable_decl_node(lu_type_reference(lu_type_get(NULL, var_type.value.stringValue)),
+                                              var_name.value.stringValue,
+                                              cu_set_create(1,
+                                                  cu_string("reference")));
+}
+var_decl_header(output) ::= STATIC IDENTIFIER(var_type) IDENTIFIER(var_name) . { 
+    output = lu_ast_create_variable_decl_node(lu_type_get(NULL, var_type.value.stringValue),
+                                              var_name.value.stringValue,
+                                              cu_set_create(1,
+                                                  cu_string("static")));
+}
+
+var_decl_header(output) ::= STATIC IDENTIFIER(var_type) AT IDENTIFIER(var_name) . { 
+    output = lu_ast_create_variable_decl_node(lu_type_reference(lu_type_get(NULL, var_type.value.stringValue)),
+                                              var_name.value.stringValue,
+                                              cu_set_create(cu_string("static")));
+}
+
+cast_type_declaration (output) ::= DOLLAR type_declaration (input) . { output = input; }
+type_declaration(output) ::= IDENTIFIER (name) . { output = lu_type_get(NULL, name.value.stringValue); }
+type_declaration(output) ::= IDENTIFIER (name) AT . {
+    output = lu_type_reference(lu_type_get(NULL, name.value.stringValue));
+}
+type_declaration(output) ::= IDENTIFIER (name) array_empty_size_decls(array_sizes) . {
+    output = lu_type_array(lu_type_get(NULL, name.value.stringValue), array_sizes);
+}
+type_declaration(output) ::= IDENTIFIER (name) AT array_empty_size_decls(array_sizes) . {
+    output = lu_type_array(lu_type_reference(lu_type_get(NULL, name.value.stringValue)), array_sizes);
+}
+
+array_size_decls(output) ::= array_size_decls(head) array_size_decl(tail)  . {
+    output = head; 
+    cu_list_push_back(output, tail);
+}
+array_size_decls(output) ::= array_size_decl(input) . {
+    output = (CUList *)cu_linkedlist();
+    cu_list_push_back(output, input);
+}
+
+array_size_decl ::= array_subscript .
+
+array_empty_size_decls(output) ::= array_empty_size_decls(head) array_empty_size_decl . { output = head + 1; }
+array_empty_size_decls(output) ::= array_empty_size_decl . { output = 1; }
+array_empty_size_decl ::= LSQUARE RSQUARE . 
+
+array_subscript ::= LSQUARE logical_expr RSQUARE .
+
+logical_expr ::= var_decl .
+
+// logical and, or, xor
+logical_expr(output) ::= logical_expr(left) logical_op(opcode) comparison_expr(right) . { output = lu_ast_create_binary_node(opcode, left, right); }
+logical_expr ::= comparison_expr .
+
+// comparison expressions
+comparison_expr(output) ::= comparison_expr(left) comparison_op(opcode) bitwise_expr(right) . { output = lu_ast_create_binary_node(opcode, left, right); }
+comparison_expr ::= bitwise_expr .
+
+// Bitwise not, xor, or, and operators
+bitwise_expr(output) ::= bitwise_expr(left) bitwise_op(opcode) arithmetic_expr(right) . { output = lu_ast_create_binary_node(opcode, left, right); }
+bitwise_expr ::= arithmetic_expr .
+
+// addition
+arithmetic_expr(output) ::= arithmetic_expr(left) arithmetic_op(opcode) cast_expr(right) . { output = lu_ast_create_binary_node(opcode, left, right); }
+arithmetic_expr ::= cast_expr .
+
+cast_expr (output) ::= cast_expr (source) cast_type_declaration (target_type) . { output = lu_ast_create_cast_node(source, target_type); }
+cast_expr ::= unary_expr .
+
+unary_expr ::= postfix_expr .
+unary_expr(output) ::= PLUSPLUS unary_expr(input) . { output = lu_ast_create_unary_node(CHUCK_OP_PLUSPLUS, input, true); }
+unary_expr(output) ::= MINUSMINUS unary_expr(input) . { output = lu_ast_create_unary_node(CHUCK_OP_MINUSMINUS, input, true); }
+unary_expr(output) ::= BIT_NOT unary_expr(input) . { output = lu_ast_create_unary_node(CHUCK_OP_BIT_NOT, input, true); }
+unary_expr(output) ::= NOT unary_expr(input) . { output = lu_ast_create_unary_node(CHUCK_OP_NOT, input, true); }
+unary_expr(output) ::= MINUS unary_expr(input) . { output = lu_ast_create_unary_node(CHUCK_OP_MINUS, input, true); }
+
+
+postfix_expr ::= primary_expr .
+postfix_expr(output) ::= postfix_expr(input) LPAREN RPAREN . { output = lu_ast_create_func_call_node(input, NULL); }
+postfix_expr(output) ::= postfix_expr(input) LPAREN param_list(params) RPAREN . { output = lu_ast_create_func_call_node(input, params); }
+postfix_expr ::= postfix_expr COLONCOLON IDENTIFIER .
+postfix_expr(output) ::= postfix_expr(input) DOT IDENTIFIER(attrib) . { output = lu_ast_create_member_access_node(input, attrib.value.stringValue); }
+postfix_expr(output) ::= postfix_expr(input) PLUSPLUS . { output = lu_ast_create_unary_node(CHUCK_OP_PLUSPLUS, input, false); }
+postfix_expr(output) ::= postfix_expr(input) MINUSMINUS . { output = lu_ast_create_unary_node(CHUCK_OP_MINUSMINUS, input, false); }
+postfix_expr(output) ::= postfix_expr(input) array_subscript(subscript) . { output = lu_ast_create_subscript_node(input, subscript); }
+postfix_expr(output) ::= LSQUARE param_list(input) RSQUARE . { output = lu_ast_create_list_node(input); }
+postfix_expr(output) ::= NEW type_declaration(input) . { output = chuck_ast_create_new_node(input); }
+
+primary_expr(output) ::= LPAREN logical_expr(input) RPAREN . { output = input; }
+primary_expr(output) ::= LONG(token) . { output = lu_ast_create_long_node(token.value.longValue); }
+primary_expr(output) ::= DOUBLE(token) . { output = lu_ast_create_double_node(token.value.doubleValue); }
+primary_expr(output) ::= STRING(token) . { output = lu_ast_create_string_node(token.value.stringValue); }
+primary_expr(output) ::= IDENTIFIER(token) . { output = lu_ast_create_variable_node(token.value.stringValue); }
+// primary_expr(output) ::= TIME(token) .
+primary_expr ::= complex_expression .
+primary_expr ::= polar_expression .
+
+complex_expression(output) ::= HASH LPAREN logical_expr(x) COMMA logical_expr(y) RPAREN . { output = chuck_ast_create_complex_node(x,y,false); }
+polar_expression(output) ::= PERCENT LPAREN logical_expr(x) COMMA logical_expr(y) RPAREN . { output = chuck_ast_create_complex_node(x,y,true); }
+
+param_list(output) ::= param_list(input) COMMA logical_expr(child) . { output = input; cu_list_push_back(output, child); }
+param_list(output) ::= logical_expr(child) . { output = (CUList *)cu_linkedlist(); cu_list_push_back(output, child); }
+
+class_statement(output) ::= CLASS IDENTIFIER(name) statement(body) . {
+    output = chuck_ast_create_class_node(name.value.stringValue, NULL, body);
+}
+class_statement(output) ::= CLASS IDENTIFIER(name) EXTENDS IDENTIFIER(parent) statement(body) . {
+    output = chuck_ast_create_class_node(name.value.stringValue, parent.value.stringValue, body);
+}
+
+statement(output) ::= function_statement(input) . { output = (LUASTNode *)input; }
+function_statement(output) ::= fun_type_declaration(function) IDENTIFIER(func_name)
+                                LPAREN fun_param_list(p) RPAREN statement(b) . {
+    output = function;
+    cu_setattr(output, name, func_name.value.stringValue);
+    cu_setattr(output, params, p);
+    cu_setattr(output, body, b);
+}
+function_statement(output) ::= fun_type_declaration(function) IDENTIFIER(func_name) 
+                                LPAREN RPAREN statement(b) . {
+    output = function;
+    cu_setattr(output, name, func_name.value.stringValue);
+    cu_setattr(output, body, b);
+}
+
+fun_param_list(output) ::= type_declaration(param_type) IDENTIFIER(param_name) . {
+    output = (CUList *)cu_linkedlist();
+    cu_list_push_back(output, param_type);
+    cu_list_push_back(output, param_name.value.stringValue);
+}
+fun_param_list(output) ::= fun_param_list(input) COMMA type_declaration(param_type) IDENTIFIER(param_name) . {
+    output = input;
+    cu_list_push_back(output, param_type);
+    cu_list_push_back(output, param_name.value.stringValue);
+}
+
+fun_type_declaration(output) ::= FUN type_declaration(input) . {
+    output = (ChuckASTFuncDefnNode *)chuck_ast_create_func_defn_node(input, NULL, NULL, NULL, 0);
+}
+fun_type_declaration(output) ::= FUN STATIC type_declaration (input) . {
+    output = (ChuckASTFuncDefnNode *)chuck_ast_create_func_defn_node(input, NULL, NULL, NULL, CHUCK_FUNC_STATIC);
+}
+
+chuck_op(output) ::= CHUCK . { output = CHUCK_OP_CHUCK; }
+chuck_op(output) ::= UP_CHUCK . { output = CHUCK_OP_UP_CHUCK; }
+chuck_op(output) ::= RSHIFT_CHUCK . { output = CHUCK_OP_RSHIFT_CHUCK; }
+chuck_op(output) ::= LSHIFT_CHUCK . { output = CHUCK_OP_LSHIFT_CHUCK; }
+chuck_op(output) ::= MINUS_CHUCK . { output = CHUCK_OP_MINUS_CHUCK; }
+chuck_op(output) ::= PLUS_CHUCK . { output = CHUCK_OP_PLUS_CHUCK; }
+chuck_op(output) ::= DIV_CHUCK . { output = CHUCK_OP_DIV_CHUCK; }
+chuck_op(output) ::= MOD_CHUCK . { output = CHUCK_OP_MOD_CHUCK; }
+chuck_op(output) ::= TIMES_CHUCK . { output = CHUCK_OP_TIMES_CHUCK; }
+chuck_op(output) ::= BIT_AND_CHUCK . { output = CHUCK_OP_BIT_AND_CHUCK; }
+chuck_op(output) ::= BIT_OR_CHUCK . { output = CHUCK_OP_BIT_OR_CHUCK; }
+chuck_op(output) ::= BIT_XOR_CHUCK . { output = CHUCK_OP_BIT_XOR_CHUCK; }
+chuck_op(output) ::= BIT_NOT_CHUCK . { output = CHUCK_OP_BIT_NOT_CHUCK; }
+chuck_op(output) ::= AT_CHUCK . { output = CHUCK_OP_AT_CHUCK; }
+chuck_op(output) ::= NOT_CHUCK . { output = CHUCK_OP_NOT_CHUCK; }
+
+arithmetic_op(output) ::= PLUS . { output = CHUCK_OP_PLUS; }
+arithmetic_op(output) ::= MINUS . { output = CHUCK_OP_MINUS; }
+arithmetic_op(output) ::= DIVIDE . { output = CHUCK_OP_DIVIDE; }
+arithmetic_op(output) ::= TIMES . { output = CHUCK_OP_TIMES; }
+arithmetic_op(output) ::= PERCENT . { output = CHUCK_OP_PERCENT; }
+arithmetic_op(output) ::= POWER . { output = CHUCK_OP_POWER; }
+
+bitwise_op(output) ::= BIT_OR . { output = CHUCK_OP_BIT_OR; }
+bitwise_op(output) ::= BIT_AND . { output = CHUCK_OP_BIT_AND; }
+bitwise_op(output) ::= BIT_XOR . { output = CHUCK_OP_BIT_XOR; }
+bitwise_op(output) ::= LSHIFT . { output = CHUCK_OP_LSHIFT; }
+bitwise_op(output) ::= RSHIFT . { output = CHUCK_OP_RSHIFT; }
+
+comparison_op(output) ::= CMP_LE . { output = CHUCK_OP_CMP_LE; }
+comparison_op(output) ::= CMP_LT . { output = CHUCK_OP_CMP_LT; }
+comparison_op(output) ::= CMP_EQ . { output = CHUCK_OP_CMP_EQ; }
+comparison_op(output) ::= CMP_NE . { output = CHUCK_OP_CMP_NE; }
+comparison_op(output) ::= CMP_GT . { output = CHUCK_OP_CMP_GT; }
+comparison_op(output) ::= CMP_GE . { output = CHUCK_OP_CMP_GE; }
+
+logical_op(output) ::= LOG_AND . { output = CHUCK_OP_LOG_AND; }
+logical_op(output) ::= LOG_OR . { output = CHUCK_OP_LOG_OR; }
+logical_op(output) ::= LOG_XOR . { output = CHUCK_OP_LOG_XOR; }
+
+%code {
+    LUASTNode *chuck_parse_stream(CUIStream *instream)
+    {
+        ChuckParserContext parser_context;
+        parser_context.scanner = chuck_scanner_create(instream);
+        parser_context.root = NULL;
+        void *parser = ParseAlloc(malloc);
+        int token;
+        while ((token = chuck_scanner_scan(parser_context.scanner)) != TOKEN_EOI)
+        {
+            Parse(parser, token, parser_context.scanner->currToken, &parser_context);
+        }
+        Parse(parser, 0, parser_context.scanner->currToken, &parser_context);
+        ParseFree(parser, free);
+        chuck_scanner_destroy(parser_context.scanner);
+        return parser_context.root;
+    }
+}
+
