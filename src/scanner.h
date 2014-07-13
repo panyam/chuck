@@ -15,7 +15,27 @@ extern "C" {
 struct ChuckScanner
 {
     CUIStream *instream;
-    uchar *bot, *tok, *ptr, *cur, *pos, *lim, *top, *eof;
+    // Start of the input buffer
+    uchar *bot;
+    // "End" of the memory occupied by input buffer, 
+    // ie bot + totalBufferCapacity
+    uchar *top;
+
+    // This is the pointer to the "last" byte in the buffer - this may not necessarily be "top"
+    // ie if the buffer size is 1024 and only 512 bytes have been read so far, top would be at 1024
+    // and lim would be at 512
+    uchar *lim;
+
+    // The pointer in the buffer where the current token starts
+    uchar *tok;
+    // The current char that the scanner is pointing to?
+    uchar *cur;
+    uchar *ptr;
+    uchar *pos;
+
+    // eof is *only* set and points to "lim" if no more data is available in the input
+    uchar *eof;
+
     uint line;
     ChuckToken currToken;
 };
